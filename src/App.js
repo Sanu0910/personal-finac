@@ -21,14 +21,31 @@ import {
 import { IndianRupee, Plus, Trash2, PiggyBank, Edit, Lightbulb, ChevronLeft, ChevronRight, BookOpen, BarChart2, CreditCard, Calendar, CheckCircle } from 'lucide-react';
 
 // --- Firebase Configuration ---
-const firebaseConfig = typeof __firebase_config !== 'undefined' ? JSON.parse(__firebase_config) : {};
-const appId = typeof __app_id !== 'undefined' ? __app_id : 'default-app-id';
+// Use environment variables for Firebase config and App ID
+const firebaseConfigString = process.env.REACT_APP_FIREBASE_CONFIG;
+let firebaseConfig = {};
+try {
+    if (firebaseConfigString) {
+        firebaseConfig = JSON.parse(firebaseConfigString);
+    } else {
+        console.warn("Firebase config (REACT_APP_FIREBASE_CONFIG) is not set. Using empty config.");
+    }
+} catch (error) {
+    console.error("Error parsing REACT_APP_FIREBASE_CONFIG:", error);
+    // Fallback to empty config if parsing fails
+}
+
+const appId = process.env.REACT_APP_APP_ID || 'default-app-id';
+if (!process.env.REACT_APP_APP_ID) {
+    console.warn("App ID (REACT_APP_APP_ID) is not set. Using 'default-app-id'.");
+}
+
 
 // --- Firebase Initialization ---
 const app = initializeApp(firebaseConfig);
 const auth = getAuth(app);
 const db = getFirestore(app);
-setLogLevel('debug');
+setLogLevel('debug'); // Consider making this conditional based on environment too e.g. process.env.NODE_ENV === 'development'
 
 // --- Financial Wisdom Data ---
 const financialWisdom = [
@@ -243,38 +260,104 @@ export default function App() {
     const COLORS = ['#0088FE', '#00C49F', '#FFBB28', '#FF8042', '#AF19FF', '#FF1943', '#19D4FF', '#FF19AF'];
 
     useEffect(() => {
+        const initialAuthToken = process.env.REACT_APP_INITIAL_AUTH_TOKEN;
+        if (!process.env.REACT_APP_INITIAL_AUTH_TOKEN) {
+            console.warn("Initial auth token (REACT_APP_INITIAL_AUTH_TOKEN) is not set. Will attempt anonymous sign-in if needed.");
+        }
+
         const unsubAuth = onAuthStateChanged(auth, async (user) => {
-            if (user) { setUserId(user.uid); }
-            else { try { if (typeof __initial_auth_token !== 'undefined' && __initial_auth_token) { await signInWithCustomToken(auth, __initial_auth_token); } else { await signInAnonymously(auth); } } catch (error) { console.error("Auth Error:", error); } }
+            if (user) {
+                setUserId(user.uid);
+            } else {
+                try {
+                    if (initialAuthToken) {
+                        await signInWithCustomToken(auth, initialAuthToken);
+                    } else {
+                        await signInAnonymously(auth);
+                    }
+                } catch (error) {
+                    console.error("Auth Error during initial sign-in attempt:", error);
+                    // Potentially fall back to anonymous sign-in again if custom token fails
+                    if (initialAuthToken && !auth.currentUser) {
+                        try {
+                            console.log("Attempting anonymous sign-in after custom token failure.");
+                            await signInAnonymously(auth);
+                        } catch (anonError) {
+                            console.error("Anonymous sign-in also failed:", anonError);
+                        }
+                    }
+                }
+            }
             setIsAuthReady(true);
         });
         const wisdomInterval = setInterval(() => setWisdomIndex(prev => (prev + 1) % financialWisdom.length), 15000);
         return () => { unsubAuth(); clearInterval(wisdomInterval); };
-    }, []);
+    }, []); // Empty dependency array means this runs once on mount and cleans up on unmount
 
     useEffect(() => {
-        if (!isAuthReady || !userId) { setIsLoading(!(!isAuthReady || !userId)); return; }
-        setIsLoading(true);
+        // Ensure Firebase app is initialized before trying to use Firestore services
+        if (!app || !isAuthReady || !userId) {
+            setIsLoading(!(!isAuthReady || !userId)); // Keep loading if auth isn't ready or no user ID
+            return;
+        }
+        setIsLoading(true); // Set loading true at the start of data fetching
 
-        const unsubExpenses = onSnapshot(collection(db, `artifacts/${appId}/users/${userId}/expenses`), (snap) => {
+        // Check if Firestore is available/initialized (db object should exist)
+        if (!db) {
+            console.error("Firestore is not initialized. Skipping data fetch.");
+            setIsLoading(false);
+            return;
+        }
+
+        const expensesCollectionPath = `artifacts/${appId}/users/${userId}/expenses`;
+        const salaryDocPath = `artifacts/${appId}/users/${userId}/profile/salary`;
+        const billsCollectionPath = `artifacts/${appId}/users/${userId}/creditCardBills`;
+
+        console.log("Attempting to fetch data for user:", userId, "appId:", appId);
+        console.log("Expenses path:", expensesCollectionPath);
+        console.log("Salary path:", salaryDocPath);
+        console.log("Bills path:", billsCollectionPath);
+
+
+        const unsubExpenses = onSnapshot(collection(db, expensesCollectionPath), (snap) => {
             setAllExpenses(snap.docs.map(doc => ({ id: doc.id, ...doc.data(), amount: Number(doc.data().amount) })));
+            console.log("Expenses fetched:", snap.docs.length);
+            setIsLoading(false); // Set loading to false after first successful fetch or empty snapshot
+        }, (err) => {
+            console.error("Expense fetch error:", err, "Path:", expensesCollectionPath);
             setIsLoading(false);
-        }, (err) => { console.error("Expense fetch error:", err); setIsLoading(false); });
+        });
 
-        const unsubSalary = onSnapshot(doc(db, `artifacts/${appId}/users/${userId}/profile/salary`), (doc) => {
-            setSalary(doc.exists() ? doc.data().monthlySalary : 0);
-            setIsLoading(false);
-        }, (err) => { console.error("Salary fetch error:", err); setIsLoading(false); });
+        const unsubSalary = onSnapshot(doc(db, salaryDocPath), (docSnap) => { // Renamed to docSnap to avoid conflict
+            setSalary(docSnap.exists() ? docSnap.data().monthlySalary : 0);
+            console.log("Salary fetched, exists:", docSnap.exists());
+            // Do not set isLoading here if expenses are still loading
+        }, (err) => {
+            console.error("Salary fetch error:", err, "Path:", salaryDocPath);
+            // Do not set isLoading here
+        });
 
-        const unsubBills = onSnapshot(collection(db, `artifacts/${appId}/users/${userId}/creditCardBills`), (snap) => {
+        const unsubBills = onSnapshot(collection(db, billsCollectionPath), (snap) => {
             setCreditCardBills(snap.docs.map(doc => ({ id: doc.id, ...doc.data() })));
-            setIsLoading(false);
-        }, (err) => { console.error("Bill fetch error:", err); setIsLoading(false); });
+            console.log("Bills fetched:", snap.docs.length);
+            // Do not set isLoading here
+        }, (err) => {
+            console.error("Bill fetch error:", err, "Path:", billsCollectionPath);
+            // Do not set isLoading here
+        });
+
+        // Set loading to false only after all initial data or first snapshot is processed
+        // This is tricky with multiple listeners. A common pattern is to set loading false in the "slowest" one
+        // or use a counter. For simplicity, expenses often drive the main loading state.
 
         return () => { unsubExpenses(); unsubSalary(); unsubBills(); };
-    }, [isAuthReady, userId]);
+    }, [isAuthReady, userId, app, db, appId]); // Added app, db, appId as dependencies
 
     const filteredExpenses = useMemo(() => allExpenses.filter(expense => {
+        if (!expense.createdAt || typeof expense.createdAt.toDate !== 'function') {
+             console.warn("Invalid expense createdAt field:", expense);
+             return false; // Skip expenses with invalid date
+        }
         const expenseDate = expense.createdAt.toDate();
         return expenseDate.getFullYear() === selectedDate.getFullYear() && expenseDate.getMonth() === selectedDate.getMonth();
     }), [allExpenses, selectedDate]);
@@ -290,22 +373,23 @@ export default function App() {
         return Array.from(dataMap, ([name, value]) => ({ name, value }));
     }, [filteredExpenses]);
 
-    const handleSetSalary = async (newSalary) => { if (userId) await setDoc(doc(db, `artifacts/${appId}/users/${userId}/profile/salary`), { monthlySalary: newSalary }); };
+    const handleSetSalary = async (newSalary) => { if (userId && db) await setDoc(doc(db, `artifacts/${appId}/users/${userId}/profile/salary`), { monthlySalary: newSalary }); };
 
     const handleAddExpense = async (e) => {
         e.preventDefault();
-        if (!description || !amount || !userId) return;
+        if (!description || !amount || !userId || !db) return;
         await addDoc(collection(db, `artifacts/${appId}/users/${userId}/expenses`), { description, amount: parseFloat(amount), category, createdAt: new Date() });
         setDescription(''); setAmount(''); setCategory('Food');
     };
 
-    const handleDeleteExpense = async (id) => { if (userId) await deleteDoc(doc(db, `artifacts/${appId}/users/${userId}/expenses/${id}`)); };
+    const handleDeleteExpense = async (id) => { if (userId && db) await deleteDoc(doc(db, `artifacts/${appId}/users/${userId}/expenses/${id}`)); };
 
-    const handleAddBill = async (billData) => { if (userId) await addDoc(collection(db, `artifacts/${appId}/users/${userId}/creditCardBills`), { ...billData, isPaid: false }); };
-    const handleMarkBillAsPaid = async (id) => { if (userId) await updateDoc(doc(db, `artifacts/${appId}/users/${userId}/creditCardBills/${id}`), { isPaid: true }); };
-    const handleDeleteBill = async (id) => { if (userId) await deleteDoc(doc(db, `artifacts/${appId}/users/${userId}/creditCardBills/${id}`)); };
+    const handleAddBill = async (billData) => { if (userId && db) await addDoc(collection(db, `artifacts/${appId}/users/${userId}/creditCardBills`), { ...billData, isPaid: false }); };
+    const handleMarkBillAsPaid = async (id) => { if (userId && db) await updateDoc(doc(db, `artifacts/${appId}/users/${userId}/creditCardBills/${id}`), { isPaid: true }); };
+    const handleDeleteBill = async (id) => { if (userId && db) await deleteDoc(doc(db, `artifacts/${appId}/users/${userId}/creditCardBills/${id}`)); };
 
     if (isLoading) return <div className="bg-gray-900 min-h-screen flex flex-col justify-center items-center text-white"><PiggyBank size={48} className="animate-bounce" /><p className="mt-4">Loading Financials...</p></div>;
+    if (!firebaseConfig.apiKey) return <div className="bg-gray-900 min-h-screen flex flex-col justify-center items-center text-white"><p>Firebase configuration is missing. Please set REACT_APP_FIREBASE_CONFIG.</p></div>;
 
     return (
         <div className="bg-gray-900 min-h-screen text-white font-sans p-4 sm:p-6 lg:p-8">
@@ -352,7 +436,12 @@ export default function App() {
 
                     <div className="bg-gray-800 p-6 rounded-2xl shadow-lg flex-grow">
                         <h2 className="text-xl font-bold mb-4">Transaction History</h2>
-                        <div className="space-y-3 pr-2 h-[400px] overflow-y-auto">{filteredExpenses.length > 0 ? ([...filteredExpenses].sort((a, b) => b.createdAt.toDate() - a.createdAt.toDate()).map((expense) => (<div key={expense.id} className="flex justify-between items-center bg-gray-900 p-3 rounded-lg"><div><p className="font-semibold">{expense.description}</p><p className="text-sm text-gray-400">{expense.category}</p></div><div className="flex items-center gap-4"><p className="font-bold text-red-400">{Number(expense.amount).toLocaleString('en-IN', { style: 'currency', currency: 'INR' })}</p><button onClick={() => handleDeleteExpense(expense.id)} className="text-gray-500 hover:text-red-500"><Trash2 size={18}/></button></div></div>))) : <div className="text-center text-gray-500 pt-16">Transactions will appear here.</div>}</div>
+                        <div className="space-y-3 pr-2 h-[400px] overflow-y-auto">{filteredExpenses.length > 0 ? ([...filteredExpenses].sort((a, b) => {
+                           // Ensure createdAt and toDate are valid before sorting
+                           const dateA = a.createdAt && typeof a.createdAt.toDate === 'function' ? a.createdAt.toDate() : new Date(0);
+                           const dateB = b.createdAt && typeof b.createdAt.toDate === 'function' ? b.createdAt.toDate() : new Date(0);
+                           return dateB - dateA;
+                        }).map((expense) => (<div key={expense.id} className="flex justify-between items-center bg-gray-900 p-3 rounded-lg"><div><p className="font-semibold">{expense.description}</p><p className="text-sm text-gray-400">{expense.category}</p></div><div className="flex items-center gap-4"><p className="font-bold text-red-400">{Number(expense.amount).toLocaleString('en-IN', { style: 'currency', currency: 'INR' })}</p><button onClick={() => handleDeleteExpense(expense.id)} className="text-gray-500 hover:text-red-500"><Trash2 size={18}/></button></div></div>))) : <div className="text-center text-gray-500 pt-16">Transactions will appear here.</div>}</div>
                     </div>
                 </div>
             </main>
