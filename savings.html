@@ -1,0 +1,54 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Savings Tracker - Financial Planner</title>
+    <link rel="stylesheet" href="css/style.css">
+</head>
+<body>
+    <header>
+        <nav>
+            <ul>
+                <li><a href="index.html">Home</a></li>
+                <li><a href="savings.html">Savings Tracker</a></li>
+                <li><a href="expenses.html">Expense Tracker</a></li>
+            </ul>
+        </nav>
+    </header>
+    <main>
+        <h1>Savings Tracker</h1>
+        <p>Here you can track your savings goals and progress.</p>
+
+        <section id="savings-form-section">
+            <h2>Add Savings Contribution</h2>
+            <form id="savings-form">
+                <div>
+                    <label for="savings-description">Description (e.g., Monthly Deposit, Bonus):</label>
+                    <input type="text" id="savings-description" required>
+                </div>
+                <div>
+                    <label for="savings-amount">Amount (&dollar;):</label>
+                    <input type="number" id="savings-amount" min="0.01" step="0.01" required>
+                </div>
+                <div class="form-error-message" id="savings-form-error"></div>
+                <button type="submit" class="btn">Add Contribution</button>
+            </form>
+        </section>
+
+        <section id="savings-list-section">
+            <h2>Your Contributions</h2>
+            <ul id="savings-list">
+                <!-- Savings contributions will be listed here -->
+            </ul>
+            <div id="total-savings">
+                <strong>Total Savings: &dollar;<span id="total-savings-amount">0.00</span></strong>
+            </div>
+        </section>
+    </main>
+    <footer>
+        <p>&copy; 2024 Financial Planner</p>
+    </footer>
+    <script src="js/script.js"></script>
+</body>
+</html>

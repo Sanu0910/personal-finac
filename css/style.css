@@ -1,0 +1,208 @@
+/* Basic Reset & Modern Defaults */
+*,
+*::before,
+*::after {
+    margin: 0;
+    padding: 0;
+    box-sizing: border-box;
+}
+
+body {
+    font-family: 'Arial', sans-serif; /* Cleaner sans-serif font */
+    line-height: 1.6;
+    color: #333;
+    background-color: #f8f9fa; /* Lighter background */
+    display: flex;
+    flex-direction: column;
+    min-height: 100vh;
+}
+
+/* Header Styling */
+header {
+    background: #ffffff; /* White header for a cleaner look */
+    color: #333;
+    padding: 1.5rem 2rem; /* Increased padding */
+    box-shadow: 0 2px 4px rgba(0,0,0,0.1); /* Subtle shadow */
+    text-align: center;
+}
+
+header .logo a {
+    color: #333;
+    text-decoration: none;
+    font-size: 1.8em;
+    font-weight: bold;
+}
+
+header nav ul {
+    list-style: none;
+    margin-top: 1rem; /* Space between logo and nav */
+}
+
+header nav ul li {
+    display: inline-block; /* Use inline-block for better control */
+    margin: 0 15px; /* Consistent spacing */
+}
+
+header nav ul li a {
+    color: #555; /* Softer link color */
+    text-decoration: none;
+    font-size: 1.1em;
+    transition: color 0.3s ease;
+}
+
+header nav ul li a:hover,
+header nav ul li a.active { /* Style for active page */
+    color: #007bff; /* Accent color */
+}
+
+/* Main Content Area */
+main {
+    flex-grow: 1; /* Allows main to fill available space */
+    padding: 30px 20px;
+    max-width: 960px; /* Max width for content */
+    margin: 20px auto; /* Center content */
+    background-color: #ffffff;
+    box-shadow: 0 2px 8px rgba(0,0,0,0.05);
+    border-radius: 8px;
+}
+
+h1 {
+    font-size: 2.2em;
+    color: #333;
+    margin-bottom: 25px;
+    text-align: center;
+}
+
+p {
+    font-size: 1.1em;
+    margin-bottom: 15px;
+    color: #555;
+}
+
+/* Footer Styling */
+footer {
+    text-align: center;
+    padding: 1.5rem 0;
+    background: #333;
+    color: #f8f9fa; /* Light text on dark background */
+    width: 100%;
+}
+
+/* Basic Responsiveness */
+@media (max-width: 768px) {
+    header {
+        padding: 1rem;
+    }
+
+    header nav ul li {
+        display: block; /* Stack nav items on small screens */
+        margin: 10px 0;
+    }
+
+    main {
+        padding: 20px 15px;
+        margin: 15px;
+    }
+
+    h1 {
+        font-size: 1.8em;
+    }
+}
+
+/* Utility classes (can be expanded) */
+.container {
+    width: 90%;
+    max-width: 1100px;
+    margin: auto;
+    overflow: hidden; /* Clear floats */
+}
+
+/* Basic button styling (example) */
+.btn {
+    display: inline-block;
+    background: #007bff;
+    color: #fff;
+    padding: 10px 20px;
+    text-decoration: none;
+    border-radius: 5px;
+    transition: background-color 0.3s ease;
+}
+
+.btn:hover {
+    background: #0056b3;
+}
+
+/* Form Styling */
+form div {
+    margin-bottom: 15px;
+}
+
+form label {
+    display: block;
+    margin-bottom: 5px;
+    font-weight: bold;
+    color: #555;
+}
+
+form input[type="text"],
+form input[type="number"],
+form select { /* Added select for potential future use */
+    width: 100%;
+    padding: 10px;
+    border: 1px solid #ddd;
+    border-radius: 5px;
+    font-size: 1em;
+}
+
+form input[type="text"]:focus,
+form input[type="number"]:focus,
+form select:focus {
+    outline: none;
+    border-color: #007bff;
+    box-shadow: 0 0 0 0.2rem rgba(0,123,255,.25);
+}
+
+/* Expense/Savings List Styling */
+#expense-list-section, #savings-list-section /* Added savings for future */ {
+    margin-top: 30px;
+}
+
+#expense-list, #savings-list {
+    list-style: none;
+    padding: 0;
+}
+
+#expense-list li, #savings-list li {
+    background-color: #e9ecef;
+    padding: 10px 15px;
+    border-bottom: 1px solid #ddd;
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    margin-bottom: 8px;
+    border-radius: 4px;
+}
+
+#expense-list li:last-child, #savings-list li:last-child {
+    border-bottom: none;
+}
+
+#total-expenses, #total-savings {
+    margin-top: 20px;
+    font-size: 1.2em;
+    font-weight: bold;
+    text-align: right;
+    color: #333;
+}
+
+#total-expenses-amount, #total-savings-amount {
+    color: #007bff; /* Accent color for totals */
+}
+
+.form-error-message {
+    color: #dc3545; /* Red color for errors */
+    font-size: 0.9em;
+    margin-top: 5px;
+    margin-bottom: 10px;
+    min-height: 1em; /* Reserve space even if empty */
+}

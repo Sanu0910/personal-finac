@@ -1,0 +1,54 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Expense Tracker - Financial Planner</title>
+    <link rel="stylesheet" href="css/style.css">
+</head>
+<body>
+    <header>
+        <nav>
+            <ul>
+                <li><a href="index.html">Home</a></li>
+                <li><a href="savings.html">Savings Tracker</a></li>
+                <li><a href="expenses.html">Expense Tracker</a></li>
+            </ul>
+        </nav>
+    </header>
+    <main>
+        <h1>Expense Tracker</h1>
+        <p>Log and categorize your expenses to understand your spending habits.</p>
+
+        <section id="expense-form-section">
+            <h2>Add New Expense</h2>
+            <form id="expense-form">
+                <div>
+                    <label for="expense-description">Description:</label>
+                    <input type="text" id="expense-description" required>
+                </div>
+                <div>
+                    <label for="expense-amount">Amount (&dollar;):</label>
+                    <input type="number" id="expense-amount" min="0.01" step="0.01" required>
+                </div>
+                <div class="form-error-message" id="expense-form-error"></div>
+                <button type="submit" class="btn">Add Expense</button>
+            </form>
+        </section>
+
+        <section id="expense-list-section">
+            <h2>Your Expenses</h2>
+            <ul id="expense-list">
+                <!-- Expenses will be listed here -->
+            </ul>
+            <div id="total-expenses">
+                <strong>Total Expenses: &dollar;<span id="total-expenses-amount">0.00</span></strong>
+            </div>
+        </section>
+    </main>
+    <footer>
+        <p>&copy; 2024 Financial Planner</p>
+    </footer>
+    <script src="js/script.js"></script>
+</body>
+</html>
