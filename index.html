@@ -1,0 +1,324 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>City‑Based Personal Finance Planner (India)</title>
+  <!-- UI + Fonts -->
+  <script src="https://cdn.tailwindcss.com"></script>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap" rel="stylesheet">
+  <style>
+    html, body { height: 100%; }
+    body { font-family: Inter, system-ui, -apple-system, Segoe UI, Roboto, Ubuntu, Cantarell, "Helvetica Neue", Arial, "Noto Sans", sans-serif; }
+  </style>
+  
+  <!-- React (for app state/UI) MUST load before our script -->
+  <script src="https://unpkg.com/react@18/umd/react.production.min.js" crossorigin></script>
+  <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js" crossorigin></script>
+  
+  <!-- Swapped Recharts → Chart.js (UMD global: window.Chart). Recharts UMD can be flaky in sandboxes. -->
+  <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+</head>
+<body class="bg-slate-50 text-slate-900">
+  <div id="root"></div>
+
+  <script type="text/javascript">
+    // ------------------------------
+    // Utility & constants
+    // ------------------------------
+    const { useEffect, useMemo, useRef, useState } = React;
+    const INR = new Intl.NumberFormat('en-IN', { style: 'currency', currency: 'INR', maximumFractionDigits: 0 });
+
+    const CITY_PRESETS = {
+      Bangalore: {
+        defaultIncome: 80000,
+        expenses: { Rent: 22000, Transport: 3000, Food: 9000, Utilities: 4000, Healthcare: 2500, Entertainment: 3500, "Education/Fees": 0, Misc: 2500 }
+      },
+      Delhi: {
+        defaultIncome: 75000,
+        expenses: { Rent: 18000, Transport: 2500, Food: 8000, Utilities: 3500, Healthcare: 2500, Entertainment: 3000, "Education/Fees": 0, Misc: 2500 }
+      },
+      Mumbai: {
+        defaultIncome: 90000,
+        expenses: { Rent: 30000, Transport: 2500, Food: 9500, Utilities: 4000, Healthcare: 3000, Entertainment: 4000, "Education/Fees": 0, Misc: 3000 }
+      },
+      Kolkata: {
+        defaultIncome: 65000,
+        expenses: { Rent: 12000, Transport: 2000, Food: 7000, Utilities: 3000, Healthcare: 2000, Entertainment: 2500, "Education/Fees": 0, Misc: 2000 }
+      }
+    };
+
+    const COLORS = [
+      '#0ea5e9', '#22c55e', '#f97316', '#a78bfa', '#ef4444', '#14b8a6', '#f59e0b', '#8b5cf6', '#10b981'
+    ];
+
+    // ------------------------------
+    // Math helpers (SIP / projection)
+    // ------------------------------
+    function sipFutureValue(monthly, years, annualReturnPct) {
+      const n = Math.max(0, Math.round((+years || 0) * 12));
+      const r = (+(annualReturnPct || 0) / 100) / 12;
+      if (n === 0) return 0;
+      if (r === 0) return (+monthly || 0) * n;
+      // FV of annuity due: monthly * [((1+r)^n - 1)/r] * (1+r)
+      return (+monthly || 0) * (((Math.pow(1 + r, n) - 1) / r) * (1 + r));
+    }
+
+    function contributionSeries(monthly, years, annualReturnPct) {
+      const r = (+(annualReturnPct || 0) / 100) / 12;
+      const months = Math.max(0, Math.round((+years || 0) * 12));
+      const data = [];
+      let fv = 0;
+      for (let m = 0; m <= months; m += 6) { // every 6 months
+        if (m === 0) { data.push({ label: '0', invested: 0, value: 0 }); continue; }
+        fv = 0;
+        for (let k = 1; k <= m; k++) {
+          fv = (fv + (+monthly || 0)) * (1 + r);
+        }
+        data.push({ label: `${(m/12).toFixed(1)}y`, invested: (+monthly || 0) * m, value: fv });
+      }
+      return data;
+    }
+
+    // ------------------------------
+    // Local storage hook
+    // ------------------------------
+    function useLocalStorage(key, initial) {
+      const [state, setState] = useState(() => {
+        try {
+          const raw = localStorage.getItem(key);
+          return raw ? JSON.parse(raw) : (typeof initial === 'function' ? initial() : initial);
+        } catch { return (typeof initial === 'function' ? initial() : initial); }
+      });
+      useEffect(() => { try { localStorage.setItem(key, JSON.stringify(state)); } catch {} }, [key, state]);
+      return [state, setState];
+    }
+
+    // ------------------------------
+    // Chart.js React wrappers
+    // ------------------------------
+    function PieChartBox({ labels, values }) {
+      const canvasRef = useRef(null);
+      const chartRef = useRef(null);
+      useEffect(() => {
+        if (!window.Chart) return; // graceful if blocked
+        const ctx = canvasRef.current.getContext('2d');
+        if (chartRef.current) chartRef.current.destroy();
+        chartRef.current = new Chart(ctx, {
+          type: 'doughnut',
+          data: { labels, datasets: [{ data: values, backgroundColor: COLORS, borderWidth: 0 }] },
+          options: { responsive: true, maintainAspectRatio: false, plugins: { legend: { position: 'bottom' } } }
+        });
+        return () => chartRef.current && chartRef.current.destroy();
+      }, [labels.join('|'), values.join('|')]);
+      return React.createElement('div', { className: 'h-72' }, React.createElement('canvas', { ref: canvasRef }));
+    }
+
+    function LineChartBox({ labels, invested, value }) {
+      const canvasRef = useRef(null);
+      const chartRef = useRef(null);
+      useEffect(() => {
+        if (!window.Chart) return;
+        const ctx = canvasRef.current.getContext('2d');
+        if (chartRef.current) chartRef.current.destroy();
+        chartRef.current = new Chart(ctx, {
+          type: 'line',
+          data: {
+            labels,
+            datasets: [
+              { label: 'Total Invested', data: invested, tension: 0.25 },
+              { label: 'Projected Value', data: value, tension: 0.25 }
+            ]
+          },
+          options: {
+            responsive: true,
+            maintainAspectRatio: false,
+            scales: { y: { ticks: { callback: (v) => INR.format(v) } } },
+            plugins: { legend: { position: 'bottom' }, tooltip: { callbacks: { label: (ctx) => `${ctx.dataset.label}: ${INR.format(ctx.parsed.y)}` } } }
+          }
+        });
+        return () => chartRef.current && chartRef.current.destroy();
+      }, [labels.join('|'), invested.join('|'), value.join('|')]);
+      return React.createElement('div', { className: 'h-80' }, React.createElement('canvas', { ref: canvasRef }));
+    }
+
+    // ------------------------------
+    // App
+    // ------------------------------
+    function App() {
+      const [city, setCity] = useLocalStorage('pf-city', 'Bangalore');
+      const [income, setIncome] = useLocalStorage('pf-income', CITY_PRESETS[city].defaultIncome);
+      const [expenses, setExpenses] = useLocalStorage('pf-expenses', CITY_PRESETS[city].expenses);
+      const [sipPct, setSipPct] = useLocalStorage('pf-sipPct', 20);
+      const [returnPct, setReturnPct] = useLocalStorage('pf-returnPct', 12);
+      const [years, setYears] = useLocalStorage('pf-years', 10);
+
+      useEffect(() => {
+        // When city changes, seed defaults but keep user edits unless Reset is pressed
+        setIncome((prev) => prev || CITY_PRESETS[city].defaultIncome);
+        setExpenses((prev) => prev || CITY_PRESETS[city].expenses);
+      }, [city]);
+
+      const totalExpenses = React.useMemo(() => Object.values(expenses).reduce((a,b) => a + (+b || 0), 0), [expenses]);
+      const sipMonthly = React.useMemo(() => Math.round((+income || 0) * (+sipPct || 0) / 100), [income, sipPct]);
+      const leftover = React.useMemo(() => Math.round((+income || 0) - totalExpenses - sipMonthly), [income, totalExpenses, sipMonthly]);
+      const fv = React.useMemo(() => Math.round(sipFutureValue(sipMonthly, +years || 0, +returnPct || 0)), [sipMonthly, years, returnPct]);
+
+      const series = React.useMemo(() => contributionSeries(sipMonthly, +years || 0, +returnPct || 0), [sipMonthly, years, returnPct]);
+      const labels = series.map(d => d.label);
+      const investedArr = series.map(d => Math.round(d.invested));
+      const valueArr = series.map(d => Math.round(d.value));
+
+      const pieData = React.useMemo(() => Object.entries(expenses).map(([k, v]) => ({ name: k, value: +v || 0 })), [expenses]);
+      const pieLabels = pieData.map(d => d.name);
+      const pieValues = pieData.map(d => d.value);
+
+      function resetToCity() {
+        const preset = CITY_PRESETS[city];
+        setIncome(preset.defaultIncome);
+        setExpenses(preset.expenses);
+      }
+
+      function addCategory() {
+        const name = prompt('New expense category name');
+        if (!name) return;
+        setExpenses({ ...expenses, [name]: 0 });
+      }
+
+      function exportJSON() {
+        const payload = { city, income, expenses, sipPct, returnPct, years, generatedAt: new Date().toISOString() };
+        const blob = new Blob([JSON.stringify(payload, null, 2)], { type: 'application/json' });
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement('a');
+        a.href = url; a.download = `finance-plan-${city}.json`; a.click();
+        URL.revokeObjectURL(url);
+      }
+
+      const leftoverClass = leftover < 0 ? 'text-red-600' : 'text-emerald-700';
+
+      // Self-tests
+      function approxEqual(a, b, tol = 1e-6) { return Math.abs(a - b) <= Math.max(1, Math.abs(b)) * tol; }
+      const tests = [];
+      try {
+        tests.push({ name: 'Chart.js present', pass: !!window.Chart });
+        tests.push({ name: 'FV zero-rate equals sum', pass: sipFutureValue(1000, 1, 0) === 12000 });
+        const seq = contributionSeries(1000, 1, 12);
+        tests.push({ name: 'Series first label is 0', pass: seq[0].label === '0' });
+        tests.push({ name: 'Series includes 1.0y', pass: seq.some(x => x.label === '1.0y') });
+        const monthly = 1000, r = 0.12/12; let fvIter = 0; for (let k=1;k<=12;k++){ fvIter = (fvIter + monthly)*(1+r); }
+        tests.push({ name: 'FV @12% ~ iterative', pass: approxEqual(sipFutureValue(1000, 1, 12), fvIter, 1e-6) });
+      } catch (e) {
+        tests.push({ name: 'Tests ran', pass: false, error: String(e) });
+      }
+      tests.forEach(t => console.log(`[TEST] ${t.pass ? '✓' : '✗'} ${t.name}`, t.error || ''));
+      const allPass = tests.every(t => t.pass);
+
+      return (
+        React.createElement('div', { className: 'max-w-7xl mx-auto p-4 md:p-6' },
+          React.createElement('header', { className: 'mb-6 flex flex-col md:flex-row md:items-end md:justify-between gap-3' },
+            React.createElement('div', null,
+              React.createElement('h1', { className: 'text-3xl md:text-4xl font-semibold tracking-tight' }, 'Personal Finance Planner (India)'),
+              React.createElement('p', { className: 'text-slate-600 mt-1' }, 'City presets for Bangalore, Delhi, Mumbai, Kolkata. Adjust numbers to your reality — all values are monthly and in INR.')
+            ),
+            React.createElement('div', { className: 'flex items-center gap-2' },
+              React.createElement('span', { className: `text-xs px-2 py-1 rounded-full ${allPass ? 'bg-emerald-100 text-emerald-700' : 'bg-red-100 text-red-700'}` }, allPass ? 'Self‑checks passed' : 'Self‑checks failed'),
+              React.createElement('button', { onClick: resetToCity, className: 'px-4 py-2 rounded-xl bg-slate-900 text-white shadow hover:bg-slate-800' }, 'Reset to City Preset'),
+              React.createElement('button', { onClick: exportJSON, className: 'px-4 py-2 rounded-xl bg-white border shadow hover:bg-slate-50' }, 'Export Plan JSON')
+            )
+          ),
+
+          React.createElement('section', { className: 'grid grid-cols-1 lg:grid-cols-3 gap-4' },
+            React.createElement('div', { className: 'col-span-1 space-y-4' },
+              React.createElement('div', { className: 'bg-white rounded-2xl shadow p-4 md:p-5' },
+                React.createElement('label', { className: 'block text-sm font-medium text-slate-700 mb-1' }, 'Select City'),
+                React.createElement('select', { className: 'w-full rounded-xl border p-2', value: city, onChange: (e) => setCity(e.target.value) },
+                  Object.keys(CITY_PRESETS).map(c => React.createElement('option', { key: c, value: c }, c))
+                ),
+                React.createElement('p', { className: 'text-xs text-slate-500 mt-2' }, 'Presets are rough starting points — not official cost‑of‑living data.')
+              ),
+
+              React.createElement('div', { className: 'bg-white rounded-2xl shadow p-4 md:p-5 space-y-3' },
+                React.createElement('div', { className: 'flex items-center justify-between' },
+                  React.createElement('label', { className: 'text-sm font-medium text-slate-700' }, 'Monthly Income (take‑home)'),
+                  React.createElement('span', { className: 'text-sm font-semibold' }, INR.format(income || 0))
+                ),
+                React.createElement('input', { type: 'number', min: 0, className: 'w-full rounded-xl border p-2', value: income, onChange: (e) => setIncome(Number(e.target.value)) }),
+                React.createElement('div', { className: 'pt-2 border-t' },
+                  React.createElement('div', { className: 'flex items-center justify-between mb-1' },
+                    React.createElement('label', { className: 'text-sm font-medium text-slate-700' }, `SIP / Investing (${sipPct}%)`),
+                    React.createElement('span', { className: 'text-sm font-semibold' }, INR.format(sipMonthly))
+                  ),
+                  React.createElement('input', { type: 'range', min: 0, max: 60, step: 1, value: sipPct, onChange: (e) => setSipPct(Number(e.target.value)), className: 'w-full' })
+                ),
+                React.createElement('div', { className: 'grid grid-cols-2 gap-3 pt-3 border-t' },
+                  React.createElement('div', null,
+                    React.createElement('label', { className: 'text-xs text-slate-600' }, `Expected Return: ${returnPct}% p.a.`),
+                    React.createElement('input', { type: 'range', min: 0, max: 20, step: 0.5, value: returnPct, onChange: (e) => setReturnPct(Number(e.target.value)), className: 'w-full' })
+                  ),
+                  React.createElement('div', null,
+                    React.createElement('label', { className: 'text-xs text-slate-600' }, `Years: ${years}`),
+                    React.createElement('input', { type: 'range', min: 1, max: 40, step: 1, value: years, onChange: (e) => setYears(Number(e.target.value)), className: 'w-full' })
+                  )
+                )
+              ),
+
+              React.createElement('div', { className: 'bg-white rounded-2xl shadow p-4 md:p-5' },
+                React.createElement('div', { className: 'flex items-center justify-between mb-3' },
+                  React.createElement('h3', { className: 'font-semibold' }, 'Monthly Expenses'),
+                  React.createElement('button', { onClick: addCategory, className: 'text-sm px-3 py-1.5 rounded-lg bg-slate-900 text-white hover:bg-slate-800' }, '+ Add Category')
+                ),
+                React.createElement('div', { className: 'space-y-2' },
+                  Object.entries(expenses).map(([k, v]) => (
+                    React.createElement('div', { key: k, className: 'grid grid-cols-12 gap-2 items-center' },
+                      React.createElement('label', { className: 'col-span-5 text-sm' }, k),
+                      React.createElement('input', { className: 'col-span-6 rounded-xl border p-2', type: 'number', min: 0, value: v, onChange: (e) => setExpenses({ ...expenses, [k]: Number(e.target.value) }) }),
+                      React.createElement('button', { className: 'col-span-1 text-slate-400 hover:text-red-500', title: 'Remove', onClick: () => { const { [k]: _, ...rest } = expenses; setExpenses(rest); } }, '✕')
+                    )
+                  ))
+                )
+              )
+            ),
+
+            React.createElement('div', { className: 'col-span-1 lg:col-span-2 space-y-4' },
+              React.createElement('div', { className: 'grid grid-cols-1 md:grid-cols-3 gap-4' },
+                React.createElement('div', { className: 'bg-white rounded-2xl shadow p-4 md:p-5' },
+                  React.createElement('div', { className: 'text-xs uppercase text-slate-500 mb-1' }, 'Total Expenses'),
+                  React.createElement('div', { className: 'text-2xl font-semibold' }, INR.format(totalExpenses))
+                ),
+                React.createElement('div', { className: 'bg-white rounded-2xl shadow p-4 md:p-5' },
+                  React.createElement('div', { className: 'text-xs uppercase text-slate-500 mb-1' }, 'Leftover (after SIP)'),
+                  React.createElement('div', { className: `text-2xl font-semibold ${leftoverClass}` }, INR.format(leftover))
+                ),
+                React.createElement('div', { className: 'bg-white rounded-2xl shadow p-4 md:p-5' },
+                  React.createElement('div', { className: 'text-xs uppercase text-slate-500 mb-1' }, 'Projected Portfolio (FV)'),
+                  React.createElement('div', { className: 'text-2xl font-semibold' }, INR.format(fv))
+                )
+              ),
+
+              React.createElement('div', { className: 'bg-white rounded-2xl shadow p-4 md:p-5' },
+                React.createElement('h3', { className: 'font-semibold mb-2' }, 'Spending Breakdown'),
+                React.createElement(PieChartBox, { labels: pieLabels, values: pieValues })
+              ),
+
+              React.createElement('div', { className: 'bg-white rounded-2xl shadow p-4 md:p-5' },
+                React.createElement('h3', { className: 'font-semibold mb-2' }, 'SIP Growth Projection'),
+                React.createElement(LineChartBox, { labels, invested: investedArr, value: valueArr }),
+                React.createElement('p', { className: 'text-xs text-slate-500 mt-2' }, 'Projection assumes monthly contributions at the start of each month (annuity due). Returns are hypothetical; markets are volatile.')
+              )
+            )
+          ),
+
+          React.createElement('footer', { className: 'mt-6 text-center text-xs text-slate-500' },
+            'Made with ❤ for India • Works offline as a single HTML file • Save this page and host on GitHub Pages'
+          )
+        )
+      );
+    }
+
+    const root = ReactDOM.createRoot(document.getElementById('root'));
+    root.render(React.createElement(App));
+  </script>
+</body>
+</html>
