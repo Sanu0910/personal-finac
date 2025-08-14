@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>City‑Based Personal Finance Planner (India)</title>
+  <title>City‑Based Personal Finance Planner (India) — with Lumpsum & LIC vs MF</title>
   <!-- UI + Fonts -->
   <script src="https://cdn.tailwindcss.com"></script>
   <link rel="preconnect" href="https://fonts.googleapis.com">
@@ -18,7 +18,7 @@
   <script src="https://unpkg.com/react@18/umd/react.production.min.js" crossorigin></script>
   <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js" crossorigin></script>
   
-  <!-- Swapped Recharts → Chart.js (UMD global: window.Chart). Recharts UMD can be flaky in sandboxes. -->
+  <!-- Chart.js (UMD global: window.Chart). -->
   <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
 </head>
 <body class="bg-slate-50 text-slate-900">
@@ -55,19 +55,27 @@
     ];
 
     // ------------------------------
-    // Math helpers (SIP / projection)
+    // Math helpers (SIP / Lumpsum / projection)
     // ------------------------------
+    function monthlyRate(annualPct){ return (+(annualPct||0)/100)/12; }
+
     function sipFutureValue(monthly, years, annualReturnPct) {
       const n = Math.max(0, Math.round((+years || 0) * 12));
-      const r = (+(annualReturnPct || 0) / 100) / 12;
+      const r = monthlyRate(annualReturnPct);
       if (n === 0) return 0;
       if (r === 0) return (+monthly || 0) * n;
       // FV of annuity due: monthly * [((1+r)^n - 1)/r] * (1+r)
       return (+monthly || 0) * (((Math.pow(1 + r, n) - 1) / r) * (1 + r));
     }
 
+    function lumpsumFutureValue(principal, years, annualReturnPct){
+      const n = Math.max(0, Math.round((+years || 0) * 12));
+      const r = monthlyRate(annualReturnPct);
+      return (+principal || 0) * Math.pow(1+r, n);
+    }
+
     function contributionSeries(monthly, years, annualReturnPct) {
-      const r = (+(annualReturnPct || 0) / 100) / 12;
+      const r = monthlyRate(annualReturnPct);
       const months = Math.max(0, Math.round((+years || 0) * 12));
       const data = [];
       let fv = 0;
@@ -78,6 +86,17 @@
           fv = (fv + (+monthly || 0)) * (1 + r);
         }
         data.push({ label: `${(m/12).toFixed(1)}y`, invested: (+monthly || 0) * m, value: fv });
+      }
+      return data;
+    }
+
+    function lumpsumSeries(principal, years, annualReturnPct){
+      const r = monthlyRate(annualReturnPct);
+      const months = Math.max(0, Math.round((+years || 0) * 12));
+      const data = [];
+      for (let m = 0; m <= months; m += 6){
+        const value = (+principal || 0) * Math.pow(1+r, m);
+        data.push({ label: m===0? '0' : `${(m/12).toFixed(1)}y`, invested: m===0? (+principal||0) : (+principal||0), value });
       }
       return data;
     }
@@ -116,7 +135,7 @@
       return React.createElement('div', { className: 'h-72' }, React.createElement('canvas', { ref: canvasRef }));
     }
 
-    function LineChartBox({ labels, invested, value }) {
+    function LineCompareChart({ labels, seriesList }){
       const canvasRef = useRef(null);
       const chartRef = useRef(null);
       useEffect(() => {
@@ -127,10 +146,7 @@
           type: 'line',
           data: {
             labels,
-            datasets: [
-              { label: 'Total Invested', data: invested, tension: 0.25 },
-              { label: 'Projected Value', data: value, tension: 0.25 }
-            ]
+            datasets: seriesList.map(s => ({ label: s.label, data: s.values, tension: 0.25 }))
           },
           options: {
             responsive: true,
@@ -140,7 +156,7 @@
           }
         });
         return () => chartRef.current && chartRef.current.destroy();
-      }, [labels.join('|'), invested.join('|'), value.join('|')]);
+      }, [labels.join('|'), JSON.stringify(seriesList.map(s=>s.values))]);
       return React.createElement('div', { className: 'h-80' }, React.createElement('canvas', { ref: canvasRef }));
     }
 
@@ -152,8 +168,11 @@
       const [income, setIncome] = useLocalStorage('pf-income', CITY_PRESETS[city].defaultIncome);
       const [expenses, setExpenses] = useLocalStorage('pf-expenses', CITY_PRESETS[city].expenses);
       const [sipPct, setSipPct] = useLocalStorage('pf-sipPct', 20);
-      const [returnPct, setReturnPct] = useLocalStorage('pf-returnPct', 12);
-      const [years, setYears] = useLocalStorage('pf-years', 10);
+      const [mfReturnPct, setMfReturnPct] = useLocalStorage('pf-mf-returnPct', 12);
+      const [licIrrPct, setLicIrrPct] = useLocalStorage('pf-lic-irrPct', 5);
+      const [years, setYears] = useLocalStorage('pf-years', 20);
+      const [mode, setMode] = useLocalStorage('pf-mode', 'SIP'); // 'SIP' | 'Lumpsum'
+      const [lumpsumAmount, setLumpsumAmount] = useLocalStorage('pf-lumpsum', 2000000);
 
       useEffect(() => {
         // When city changes, seed defaults but keep user edits unless Reset is pressed
@@ -161,17 +180,27 @@
         setExpenses((prev) => prev || CITY_PRESETS[city].expenses);
       }, [city]);
 
-      const totalExpenses = React.useMemo(() => Object.values(expenses).reduce((a,b) => a + (+b || 0), 0), [expenses]);
-      const sipMonthly = React.useMemo(() => Math.round((+income || 0) * (+sipPct || 0) / 100), [income, sipPct]);
-      const leftover = React.useMemo(() => Math.round((+income || 0) - totalExpenses - sipMonthly), [income, totalExpenses, sipMonthly]);
-      const fv = React.useMemo(() => Math.round(sipFutureValue(sipMonthly, +years || 0, +returnPct || 0)), [sipMonthly, years, returnPct]);
+      const totalExpenses = useMemo(() => Object.values(expenses).reduce((a,b) => a + (+b || 0), 0), [expenses]);
+      const sipMonthly = useMemo(() => Math.round((+income || 0) * (+sipPct || 0) / 100), [income, sipPct]);
+      const leftover = useMemo(() => Math.round((+income || 0) - totalExpenses - sipMonthly), [income, totalExpenses, sipMonthly]);
 
-      const series = React.useMemo(() => contributionSeries(sipMonthly, +years || 0, +returnPct || 0), [sipMonthly, years, returnPct]);
-      const labels = series.map(d => d.label);
-      const investedArr = series.map(d => Math.round(d.invested));
-      const valueArr = series.map(d => Math.round(d.value));
+      // FV numbers
+      const sipFvMF = useMemo(() => Math.round(sipFutureValue(sipMonthly, +years || 0, +mfReturnPct || 0)), [sipMonthly, years, mfReturnPct]);
+      const sipFvLIC = useMemo(() => Math.round(sipFutureValue(sipMonthly, +years || 0, +licIrrPct || 0)), [sipMonthly, years, licIrrPct]);
+      const lumpFvMF = useMemo(() => Math.round(lumpsumFutureValue(lumpsumAmount, +years || 0, +mfReturnPct || 0)), [lumpsumAmount, years, mfReturnPct]);
+      const lumpFvLIC = useMemo(() => Math.round(lumpsumFutureValue(lumpsumAmount, +years || 0, +licIrrPct || 0)), [lumpsumAmount, years, licIrrPct]);
 
-      const pieData = React.useMemo(() => Object.entries(expenses).map(([k, v]) => ({ name: k, value: +v || 0 })), [expenses]);
+      // Series for comparison chart
+      const sipSeriesMF = useMemo(() => contributionSeries(sipMonthly, +years || 0, +mfReturnPct || 0), [sipMonthly, years, mfReturnPct]);
+      const sipSeriesLIC = useMemo(() => contributionSeries(sipMonthly, +years || 0, +licIrrPct || 0), [sipMonthly, years, licIrrPct]);
+      const lumpSeriesMF = useMemo(() => lumpsumSeries(lumpsumAmount, +years || 0, +mfReturnPct || 0), [lumpsumAmount, years, mfReturnPct]);
+      const lumpSeriesLIC = useMemo(() => lumpsumSeries(lumpsumAmount, +years || 0, +licIrrPct || 0), [lumpsumAmount, years, licIrrPct]);
+
+      const compLabels = (mode === 'SIP' ? sipSeriesMF : lumpSeriesMF).map(d => d.label);
+      const compMFVals = (mode === 'SIP' ? sipSeriesMF : lumpSeriesMF).map(d => Math.round(d.value));
+      const compLICVals = (mode === 'SIP' ? sipSeriesLIC : lumpSeriesLIC).map(d => Math.round(d.value));
+
+      const pieData = useMemo(() => Object.entries(expenses).map(([k, v]) => ({ name: k, value: +v || 0 })), [expenses]);
       const pieLabels = pieData.map(d => d.name);
       const pieValues = pieData.map(d => d.value);
 
@@ -188,7 +217,7 @@
       }
 
       function exportJSON() {
-        const payload = { city, income, expenses, sipPct, returnPct, years, generatedAt: new Date().toISOString() };
+        const payload = { city, income, expenses, sipPct, mfReturnPct, licIrrPct, years, mode, lumpsumAmount, generatedAt: new Date().toISOString() };
         const blob = new Blob([JSON.stringify(payload, null, 2)], { type: 'application/json' });
         const url = URL.createObjectURL(blob);
         const a = document.createElement('a');
@@ -215,12 +244,14 @@
       tests.forEach(t => console.log(`[TEST] ${t.pass ? '✓' : '✗'} ${t.name}`, t.error || ''));
       const allPass = tests.every(t => t.pass);
 
+      const investedSip = sipMonthly * (years*12);
+
       return (
         React.createElement('div', { className: 'max-w-7xl mx-auto p-4 md:p-6' },
           React.createElement('header', { className: 'mb-6 flex flex-col md:flex-row md:items-end md:justify-between gap-3' },
             React.createElement('div', null,
               React.createElement('h1', { className: 'text-3xl md:text-4xl font-semibold tracking-tight' }, 'Personal Finance Planner (India)'),
-              React.createElement('p', { className: 'text-slate-600 mt-1' }, 'City presets for Bangalore, Delhi, Mumbai, Kolkata. Adjust numbers to your reality — all values are monthly and in INR.')
+              React.createElement('p', { className: 'text-slate-600 mt-1' }, 'City presets + SIP & Lumpsum projections. Compare Mutual Fund vs LIC (set returns below). All values are monthly and in INR unless specified.')
             ),
             React.createElement('div', { className: 'flex items-center gap-2' },
               React.createElement('span', { className: `text-xs px-2 py-1 rounded-full ${allPass ? 'bg-emerald-100 text-emerald-700' : 'bg-red-100 text-red-700'}` }, allPass ? 'Self‑checks passed' : 'Self‑checks failed'),
@@ -230,6 +261,7 @@
           ),
 
           React.createElement('section', { className: 'grid grid-cols-1 lg:grid-cols-3 gap-4' },
+            // LEFT COLUMN
             React.createElement('div', { className: 'col-span-1 space-y-4' },
               React.createElement('div', { className: 'bg-white rounded-2xl shadow p-4 md:p-5' },
                 React.createElement('label', { className: 'block text-sm font-medium text-slate-700 mb-1' }, 'Select City'),
@@ -245,21 +277,34 @@
                   React.createElement('span', { className: 'text-sm font-semibold' }, INR.format(income || 0))
                 ),
                 React.createElement('input', { type: 'number', min: 0, className: 'w-full rounded-xl border p-2', value: income, onChange: (e) => setIncome(Number(e.target.value)) }),
+
                 React.createElement('div', { className: 'pt-2 border-t' },
                   React.createElement('div', { className: 'flex items-center justify-between mb-1' },
                     React.createElement('label', { className: 'text-sm font-medium text-slate-700' }, `SIP / Investing (${sipPct}%)`),
-                    React.createElement('span', { className: 'text-sm font-semibold' }, INR.format(sipMonthly))
+                    React.createElement('span', { className: 'text-sm font-semibold' }, INR.format(Math.max(0, sipMonthly)))
                   ),
                   React.createElement('input', { type: 'range', min: 0, max: 60, step: 1, value: sipPct, onChange: (e) => setSipPct(Number(e.target.value)), className: 'w-full' })
                 ),
+
                 React.createElement('div', { className: 'grid grid-cols-2 gap-3 pt-3 border-t' },
                   React.createElement('div', null,
-                    React.createElement('label', { className: 'text-xs text-slate-600' }, `Expected Return: ${returnPct}% p.a.`),
-                    React.createElement('input', { type: 'range', min: 0, max: 20, step: 0.5, value: returnPct, onChange: (e) => setReturnPct(Number(e.target.value)), className: 'w-full' })
+                    React.createElement('label', { className: 'text-xs text-slate-600' }, `MF Return: ${mfReturnPct}% p.a.`),
+                    React.createElement('input', { type: 'range', min: 0, max: 20, step: 0.5, value: mfReturnPct, onChange: (e) => setMfReturnPct(Number(e.target.value)), className: 'w-full' })
                   ),
+                  React.createElement('div', null,
+                    React.createElement('label', { className: 'text-xs text-slate-600' }, `LIC IRR (approx): ${licIrrPct}% p.a.`),
+                    React.createElement('input', { type: 'range', min: 0, max: 12, step: 0.25, value: licIrrPct, onChange: (e) => setLicIrrPct(Number(e.target.value)), className: 'w-full' })
+                  )
+                ),
+
+                React.createElement('div', { className: 'grid grid-cols-2 gap-3 pt-3' },
                   React.createElement('div', null,
                     React.createElement('label', { className: 'text-xs text-slate-600' }, `Years: ${years}`),
                     React.createElement('input', { type: 'range', min: 1, max: 40, step: 1, value: years, onChange: (e) => setYears(Number(e.target.value)), className: 'w-full' })
+                  ),
+                  React.createElement('div', null,
+                    React.createElement('label', { className: 'text-xs text-slate-600' }, 'Lumpsum Amount (₹)'),
+                    React.createElement('input', { type: 'number', min: 0, className: 'w-full rounded-xl border p-2', value: lumpsumAmount, onChange: (e) => setLumpsumAmount(Number(e.target.value)) })
                   )
                 )
               ),
@@ -281,37 +326,65 @@
               )
             ),
 
+            // RIGHT COLUMN
             React.createElement('div', { className: 'col-span-1 lg:col-span-2 space-y-4' },
-              React.createElement('div', { className: 'grid grid-cols-1 md:grid-cols-3 gap-4' },
+
+              // KPI CARDS
+              React.createElement('div', { className: 'grid grid-cols-1 md:grid-cols-4 gap-4' },
                 React.createElement('div', { className: 'bg-white rounded-2xl shadow p-4 md:p-5' },
                   React.createElement('div', { className: 'text-xs uppercase text-slate-500 mb-1' }, 'Total Expenses'),
                   React.createElement('div', { className: 'text-2xl font-semibold' }, INR.format(totalExpenses))
                 ),
                 React.createElement('div', { className: 'bg-white rounded-2xl shadow p-4 md:p-5' },
                   React.createElement('div', { className: 'text-xs uppercase text-slate-500 mb-1' }, 'Leftover (after SIP)'),
-                  React.createElement('div', { className: `text-2xl font-semibold ${leftoverClass}` }, INR.format(leftover))
+                  React.createElement('div', { className: `text-2xl font-semibold ${leftover < 0 ? 'text-red-600' : 'text-emerald-700'}` }, INR.format(leftover))
                 ),
                 React.createElement('div', { className: 'bg-white rounded-2xl shadow p-4 md:p-5' },
-                  React.createElement('div', { className: 'text-xs uppercase text-slate-500 mb-1' }, 'Projected Portfolio (FV)'),
-                  React.createElement('div', { className: 'text-2xl font-semibold' }, INR.format(fv))
+                  React.createElement('div', { className: 'text-xs uppercase text-slate-500 mb-1' }, 'SIP FV (MF vs LIC)'),
+                  React.createElement('div', { className: 'text-base' }, `${INR.format(sipFvMF)} vs ${INR.format(sipFvLIC)}`),
+                  React.createElement('div', { className: 'text-xs text-slate-500 mt-1' }, `Invested: ${INR.format(investedSip)}`)
+                ),
+                React.createElement('div', { className: 'bg-white rounded-2xl shadow p-4 md:p-5' },
+                  React.createElement('div', { className: 'text-xs uppercase text-slate-500 mb-1' }, 'Lumpsum FV (MF vs LIC)'),
+                  React.createElement('div', { className: 'text-base' }, `${INR.format(lumpFvMF)} vs ${INR.format(lumpFvLIC)}`),
+                  React.createElement('div', { className: 'text-xs text-slate-500 mt-1' }, `Invested: ${INR.format(lumpsumAmount)}`)
                 )
               ),
 
+              // Spending chart
               React.createElement('div', { className: 'bg-white rounded-2xl shadow p-4 md:p-5' },
                 React.createElement('h3', { className: 'font-semibold mb-2' }, 'Spending Breakdown'),
                 React.createElement(PieChartBox, { labels: pieLabels, values: pieValues })
               ),
 
-              React.createElement('div', { className: 'bg-white rounded-2xl shadow p-4 md:p-5' },
-                React.createElement('h3', { className: 'font-semibold mb-2' }, 'SIP Growth Projection'),
-                React.createElement(LineChartBox, { labels, invested: investedArr, value: valueArr }),
-                React.createElement('p', { className: 'text-xs text-slate-500 mt-2' }, 'Projection assumes monthly contributions at the start of each month (annuity due). Returns are hypothetical; markets are volatile.')
+              // MODE SWITCH + COMPARISON CHART
+              React.createElement('div', { className: 'bg-white rounded-2xl shadow p-4 md:p-5 space-y-3' },
+                React.createElement('div', { className: 'flex items-center justify-between flex-wrap gap-3' },
+                  React.createElement('h3', { className: 'font-semibold' }, 'Compare Growth: Mutual Fund vs LIC'),
+                  React.createElement('div', { className: 'inline-flex rounded-xl bg-slate-100 p-1' },
+                    ['SIP','Lumpsum'].map(m => (
+                      React.createElement('button', {
+                        key: m,
+                        onClick: () => setMode(m),
+                        className: `px-3 py-1.5 rounded-lg text-sm ${mode===m? 'bg-white shadow font-medium' : 'text-slate-600'}`
+                      }, m)
+                    ))
+                  )
+                ),
+                React.createElement(LineCompareChart, {
+                  labels: compLabels,
+                  seriesList: [
+                    { label: mode==='SIP' ? 'MF (SIP)' : 'MF (Lumpsum)', values: compMFVals },
+                    { label: mode==='SIP' ? 'LIC (SIP)' : 'LIC (Lumpsum)', values: compLICVals }
+                  ]
+                }),
+                React.createElement('p', { className: 'text-xs text-slate-500 mt-2' }, 'MF return is a user‑set assumption (market‑linked). LIC IRR is an approximate yield after bonuses; actual policy IRR varies by product & cashflows.')
               )
             )
           ),
 
           React.createElement('footer', { className: 'mt-6 text-center text-xs text-slate-500' },
-            'Made with ❤ for India • Works offline as a single HTML file • Save this page and host on GitHub Pages By @sanu_r0y'
+            'Made with ❤ for India • Works offline as a single HTML file • Save this page and host on GitHub Pages • By @sanu_r0y'
           )
         )
       );
