@@ -3,7 +3,8 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>City‑Based Personal Finance Planner (India) — with Lumpsum & LIC vs MF</title>
+  <title>City-Based Personal Finance Planner (India) — with Lumpsum & LIC vs MF</title>
+
   <!-- UI + Fonts -->
   <script src="https://cdn.tailwindcss.com"></script>
   <link rel="preconnect" href="https://fonts.googleapis.com">
@@ -13,13 +14,16 @@
     html, body { height: 100%; }
     body { font-family: Inter, system-ui, -apple-system, Segoe UI, Roboto, Ubuntu, Cantarell, "Helvetica Neue", Arial, "Noto Sans", sans-serif; }
   </style>
-  
-  <!-- React (for app state/UI) MUST load before our script -->
+
+  <!-- React (UMD) -->
   <script src="https://unpkg.com/react@18/umd/react.production.min.js" crossorigin></script>
   <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js" crossorigin></script>
-  
-  <!-- Chart.js (UMD global: window.Chart). -->
+
+  <!-- Chart.js (UMD global: window.Chart) -->
   <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+
+  <!-- jsPDF (UMD global: window.jspdf.jsPDF via window.jspdf) -->
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js" crossorigin></script>
 </head>
 <body class="bg-slate-50 text-slate-900">
   <div id="root"></div>
@@ -55,7 +59,7 @@
     ];
 
     // ------------------------------
-    // Math helpers (SIP / Lumpsum / projection)
+    // Math helpers
     // ------------------------------
     function monthlyRate(annualPct){ return (+(annualPct||0)/100)/12; }
 
@@ -90,15 +94,70 @@
       return data;
     }
 
+    function contributionSeriesStepUp(startMonthly, years, annualReturnPct, stepUpPct){
+      const r = monthlyRate(annualReturnPct);
+      const months = Math.max(0, Math.round((+years || 0) * 12));
+      const data = [];
+      let fv = 0, mth = +startMonthly||0, invested=0;
+      // simulate month-by-month; capture points every 6 months
+      for (let k = 0; k <= months; k++){
+        if (k === 0){
+          data.push({ label: '0', invested: 0, value: 0 });
+          continue;
+        }
+        // step up at month 13, 25, ...
+        if (k>1 && (k-1)%12 === 0){ mth = mth * (1 + (+stepUpPct||0)/100); }
+        invested += mth;
+        fv = (fv + mth) * (1 + r);
+        if (k % 6 === 0){
+          data.push({ label: `${(k/12).toFixed(1)}y`, invested, value: fv });
+        }
+      }
+      return data;
+    }
+
     function lumpsumSeries(principal, years, annualReturnPct){
       const r = monthlyRate(annualReturnPct);
       const months = Math.max(0, Math.round((+years || 0) * 12));
       const data = [];
       for (let m = 0; m <= months; m += 6){
         const value = (+principal || 0) * Math.pow(1+r, m);
-        data.push({ label: m===0? '0' : `${(m/12).toFixed(1)}y`, invested: m===0? (+principal||0) : (+principal||0), value });
+        data.push({ label: m===0? '0' : `${(m/12).toFixed(1)}y`, invested: (+principal||0), value });
       }
       return data;
+    }
+
+    function realFV(nominalFV, inflPct, years){
+      return nominalFV / Math.pow(1 + (+inflPct||0)/100, +years||0);
+    }
+    function goalFutureCost(presentCost, years, inflPct){
+      return (+presentCost||0) * Math.pow(1 + (+inflPct||0)/100, +years||0);
+    }
+    function monthlyForGoal(futureCost, years, annualReturnPct){
+      const n = Math.max(1, Math.round((+years||0)*12));
+      const r = monthlyRate(+annualReturnPct||0);
+      if (r === 0) return futureCost / n; // no-growth fallback
+      // annuity-due: FV = M * [((1+r)^n - 1)/r] * (1+r)
+      return futureCost / (((Math.pow(1+r, n) - 1) / r) * (1+r));
+    }
+    function sipStepUpFutureValue(startMonthly, years, annualReturnPct, stepUpPct){
+      const n = Math.max(0, Math.round((+years||0)*12));
+      const r = monthlyRate(annualReturnPct);
+      let fv = 0, m = +startMonthly||0;
+      for (let k = 1; k <= n; k++){
+        if (k>1 && (k-1)%12 === 0){ m = m * (1 + (+stepUpPct||0)/100); }
+        fv = (fv + m) * (1 + r);
+      }
+      return fv;
+    }
+    function investedStepUp(startMonthly, years, stepUpPct){
+      const n = Math.max(0, Math.round((+years||0)*12));
+      let total = 0, m = +startMonthly||0;
+      for (let k = 1; k <= n; k++){
+        if (k>1 && (k-1)%12 === 0){ m = m * (1 + (+stepUpPct||0)/100); }
+        total += m;
+      }
+      return Math.round(total);
     }
 
     // ------------------------------
@@ -122,7 +181,7 @@
       const canvasRef = useRef(null);
       const chartRef = useRef(null);
       useEffect(() => {
-        if (!window.Chart) return; // graceful if blocked
+        if (!window.Chart) return;
         const ctx = canvasRef.current.getContext('2d');
         if (chartRef.current) chartRef.current.destroy();
         chartRef.current = new Chart(ctx, {
@@ -174,6 +233,13 @@
       const [mode, setMode] = useLocalStorage('pf-mode', 'SIP'); // 'SIP' | 'Lumpsum'
       const [lumpsumAmount, setLumpsumAmount] = useLocalStorage('pf-lumpsum', 2000000);
 
+      // New features state
+      const [inflPct, setInflPct] = useLocalStorage('pf-infl', 6);
+      const [efMonths, setEfMonths] = useLocalStorage('pf-ef-months', 6);
+      const [useStepUp, setUseStepUp] = useLocalStorage('pf-useStepUp', false);
+      const [stepUpPct, setStepUpPct] = useLocalStorage('pf-stepUpPct', 10);
+      const [goals, setGoals] = useLocalStorage('pf-goals', []);
+
       useEffect(() => {
         // When city changes, seed defaults but keep user edits unless Reset is pressed
         setIncome((prev) => prev || CITY_PRESETS[city].defaultIncome);
@@ -190,14 +256,35 @@
       const lumpFvMF = useMemo(() => Math.round(lumpsumFutureValue(lumpsumAmount, +years || 0, +mfReturnPct || 0)), [lumpsumAmount, years, mfReturnPct]);
       const lumpFvLIC = useMemo(() => Math.round(lumpsumFutureValue(lumpsumAmount, +years || 0, +licIrrPct || 0)), [lumpsumAmount, years, licIrrPct]);
 
+      // Real FV (inflation-adjusted)
+      const realSipFvMF = useMemo(
+        () => Math.round(realFV(sipFvMF, inflPct, +years||0)),
+        [sipFvMF, inflPct, years]
+      );
+
+      // Step-up SIP FV and invested
+      const sipFvMF_stepUp = useMemo(() => useStepUp
+        ? Math.round(sipStepUpFutureValue(sipMonthly, +years||0, +mfReturnPct||0, +stepUpPct||0))
+        : sipFvMF,
+        [useStepUp, sipMonthly, years, mfReturnPct, stepUpPct, sipFvMF]
+      );
+
+      const investedSipFlat = useMemo(() => sipMonthly * (years*12), [sipMonthly, years]);
+      const investedSipDisplay = useMemo(() => useStepUp ? investedStepUp(sipMonthly, years, stepUpPct) : investedSipFlat, [useStepUp, sipMonthly, years, stepUpPct, investedSipFlat]);
+
       // Series for comparison chart
       const sipSeriesMF = useMemo(() => contributionSeries(sipMonthly, +years || 0, +mfReturnPct || 0), [sipMonthly, years, mfReturnPct]);
+      const sipSeriesMF_stepUp = useMemo(() => useStepUp
+        ? contributionSeriesStepUp(sipMonthly, +years||0, +mfReturnPct||0, +stepUpPct||0)
+        : sipSeriesMF,
+        [useStepUp, sipMonthly, years, mfReturnPct, stepUpPct, sipSeriesMF]
+      );
       const sipSeriesLIC = useMemo(() => contributionSeries(sipMonthly, +years || 0, +licIrrPct || 0), [sipMonthly, years, licIrrPct]);
       const lumpSeriesMF = useMemo(() => lumpsumSeries(lumpsumAmount, +years || 0, +mfReturnPct || 0), [lumpsumAmount, years, mfReturnPct]);
       const lumpSeriesLIC = useMemo(() => lumpsumSeries(lumpsumAmount, +years || 0, +licIrrPct || 0), [lumpsumAmount, years, licIrrPct]);
 
-      const compLabels = (mode === 'SIP' ? sipSeriesMF : lumpSeriesMF).map(d => d.label);
-      const compMFVals = (mode === 'SIP' ? sipSeriesMF : lumpSeriesMF).map(d => Math.round(d.value));
+      const compLabels = (mode === 'SIP' ? sipSeriesMF_stepUp : lumpSeriesMF).map(d => d.label);
+      const compMFVals = (mode === 'SIP' ? sipSeriesMF_stepUp : lumpSeriesMF).map(d => Math.round(d.value));
       const compLICVals = (mode === 'SIP' ? sipSeriesLIC : lumpSeriesLIC).map(d => Math.round(d.value));
 
       const pieData = useMemo(() => Object.entries(expenses).map(([k, v]) => ({ name: k, value: +v || 0 })), [expenses]);
@@ -217,12 +304,79 @@
       }
 
       function exportJSON() {
-        const payload = { city, income, expenses, sipPct, mfReturnPct, licIrrPct, years, mode, lumpsumAmount, generatedAt: new Date().toISOString() };
+        const payload = { city, income, expenses, sipPct, mfReturnPct, licIrrPct, years, mode, lumpsumAmount, inflPct, efMonths, useStepUp, stepUpPct, goals, generatedAt: new Date().toISOString() };
         const blob = new Blob([JSON.stringify(payload, null, 2)], { type: 'application/json' });
         const url = URL.createObjectURL(blob);
         const a = document.createElement('a');
         a.href = url; a.download = `finance-plan-${city}.json`; a.click();
         URL.revokeObjectURL(url);
+      }
+
+      function importJSON(){
+        const inp = document.createElement('input');
+        inp.type = 'file'; inp.accept = 'application/json';
+        inp.onchange = (e) => {
+          const file = e.target.files?.[0]; if(!file) return;
+          const reader = new FileReader();
+          reader.onload = () => {
+            try {
+              const j = JSON.parse(reader.result);
+              if (j.city) setCity(j.city);
+              if (j.income!=null) setIncome(j.income);
+              if (j.expenses) setExpenses(j.expenses);
+              if (j.sipPct!=null) setSipPct(j.sipPct);
+              if (j.mfReturnPct!=null) setMfReturnPct(j.mfReturnPct);
+              if (j.licIrrPct!=null) setLicIrrPct(j.licIrrPct);
+              if (j.years!=null) setYears(j.years);
+              if (j.mode) setMode(j.mode);
+              if (j.lumpsumAmount!=null) setLumpsumAmount(j.lumpsumAmount);
+              if (j.inflPct!=null) setInflPct(j.inflPct);
+              if (j.efMonths!=null) setEfMonths(j.efMonths);
+              if (j.useStepUp!=null) setUseStepUp(j.useStepUp);
+              if (j.stepUpPct!=null) setStepUpPct(j.stepUpPct);
+              if (Array.isArray(j.goals)) setGoals(j.goals);
+              alert('Plan imported.');
+            } catch(err){ alert('Invalid JSON'); }
+          };
+          reader.readAsText(file);
+        };
+        inp.click();
+      }
+
+      function exportPDF(){
+        const { jsPDF } = window.jspdf || {};
+        if (!jsPDF){ alert('PDF library not loaded'); return; }
+        const doc = new jsPDF();
+        let y = 16;
+        doc.setFontSize(14); doc.text('Personal Finance Plan — Summary', 14, y); y+=8;
+        doc.setFontSize(10);
+        doc.text(`City: ${city}`, 14, y); y+=6;
+        doc.text(`Income: ${INR.format(income)} | SIP: ${INR.format(sipMonthly)} (${sipPct}%)`, 14, y); y+=6;
+        doc.text(`Expenses: ${INR.format(totalExpenses)} | Leftover: ${INR.format(leftover)}`, 14, y); y+=6;
+        doc.text(`MF SIP FV: ${INR.format(sipFvMF_stepUp)} ${useStepUp?`(step-up ${stepUpPct}%/yr)`:''}`, 14, y); y+=6;
+        doc.text(`LIC SIP FV: ${INR.format(sipFvLIC)} | MF Lumpsum FV: ${INR.format(lumpFvMF)}`, 14, y); y+=6;
+        doc.text(`Inflation: ${inflPct}% → Real MF SIP FV: ${INR.format(realSipFvMF)}`, 14, y); y+=8;
+
+        doc.setFontSize(12); doc.text('Goals', 14, y); y+=6; doc.setFontSize(10);
+        if (goals.length === 0){ doc.text('• No goals added', 16, y); y+=6; }
+        goals.forEach(g0 => {
+          const future = Math.round(goalFutureCost(+g0.present||0, +g0.years||0, +inflPct||0));
+          const monthlyNeed = Math.round(monthlyForGoal(future, +g0.years||0, +mfReturnPct||0));
+          const line = `• ${g0.name} — future: ${INR.format(future)} | monthly need: ${INR.format(monthlyNeed)} | ${g0.years}y`;
+          doc.text(line, 16, y); y+=6;
+          if (y > 280){ doc.addPage(); y = 20; }
+        });
+
+        const efTarget = Math.round((+efMonths||0) * (+totalExpenses||0));
+        const totalGoalMonthly = goals.reduce((a,g)=>{
+          const fut = Math.round(goalFutureCost(+g.present||0, +g.years||0, +inflPct||0));
+          return a + Math.round(monthlyForGoal(fut, +g.years||0, +mfReturnPct||0));
+        },0);
+
+        y+=2; doc.text(`Total monthly needed for goals: ${INR.format(totalGoalMonthly)}`, 14, y);
+        y+=6; doc.text(`Emergency fund target: ${INR.format(efTarget)} (${efMonths} months)`, 14, y);
+
+        doc.save(`plan-${city}.pdf`);
       }
 
       const leftoverClass = leftover < 0 ? 'text-red-600' : 'text-emerald-700';
@@ -244,36 +398,57 @@
       tests.forEach(t => console.log(`[TEST] ${t.pass ? '✓' : '✗'} ${t.name}`, t.error || ''));
       const allPass = tests.every(t => t.pass);
 
-      const investedSip = sipMonthly * (years*12);
+      // Goals computed table (for UI display)
+      const goalRows = useMemo(() => goals.map(g => {
+        const future = Math.round(goalFutureCost(+g.present||0, +g.years||0, +inflPct||0));
+        const monthlyNeed = Math.round(monthlyForGoal(future, +g.years||0, +mfReturnPct||0));
+        return { ...g, future, monthlyNeed };
+      }), [goals, inflPct, mfReturnPct]);
+      const totalGoalMonthly = useMemo(() => goalRows.reduce((a,b)=>a+(+b.monthlyNeed||0),0), [goalRows]);
+
+      // Emergency fund metrics
+      const efTarget = useMemo(() => Math.round((+efMonths||0) * (+totalExpenses||0)), [efMonths, totalExpenses]);
+      const efMonthsToHit = useMemo(() => {
+        const perMonth = Math.max(0, leftover);
+        return perMonth > 0 ? Math.ceil(efTarget / perMonth) : Infinity;
+      }, [efTarget, leftover]);
 
       return (
         React.createElement('div', { className: 'max-w-7xl mx-auto p-4 md:p-6' },
+
+          // HEADER
           React.createElement('header', { className: 'mb-6 flex flex-col md:flex-row md:items-end md:justify-between gap-3' },
             React.createElement('div', null,
               React.createElement('h1', { className: 'text-3xl md:text-4xl font-semibold tracking-tight' }, 'Personal Finance Planner (India)'),
-              React.createElement('p', { className: 'text-slate-600 mt-1' }, 'City presets + SIP & Lumpsum projections. Compare Mutual Fund vs LIC (set returns below). All values are monthly and in INR unless specified.')
+              React.createElement('p', { className: 'text-slate-600 mt-1' }, 'City presets • SIP & Lumpsum projections • Mutual Fund vs LIC comparison • Inflation, Step-up SIP, Emergency Fund & Goals.')
             ),
-            React.createElement('div', { className: 'flex items-center gap-2' },
-              React.createElement('span', { className: `text-xs px-2 py-1 rounded-full ${allPass ? 'bg-emerald-100 text-emerald-700' : 'bg-red-100 text-red-700'}` }, allPass ? 'Self‑checks passed' : 'Self‑checks failed'),
+            React.createElement('div', { className: 'flex flex-wrap items-center gap-2' },
+              React.createElement('span', { className: `text-xs px-2 py-1 rounded-full ${allPass ? 'bg-emerald-100 text-emerald-700' : 'bg-red-100 text-red-700'}` }, allPass ? 'Self-checks passed' : 'Self-checks failed'),
               React.createElement('button', { onClick: resetToCity, className: 'px-4 py-2 rounded-xl bg-slate-900 text-white shadow hover:bg-slate-800' }, 'Reset to City Preset'),
-              React.createElement('button', { onClick: exportJSON, className: 'px-4 py-2 rounded-xl bg-white border shadow hover:bg-slate-50' }, 'Export Plan JSON')
+              React.createElement('button', { onClick: exportJSON, className: 'px-4 py-2 rounded-xl bg-white border shadow hover:bg-slate-50' }, 'Export Plan JSON'),
+              React.createElement('button', { onClick: importJSON, className: 'px-4 py-2 rounded-xl bg-white border shadow hover:bg-slate-50' }, 'Import Plan'),
+              React.createElement('button', { onClick: exportPDF, className: 'px-4 py-2 rounded-xl bg-white border shadow hover:bg-slate-50' }, 'Export PDF')
             )
           ),
 
           React.createElement('section', { className: 'grid grid-cols-1 lg:grid-cols-3 gap-4' },
+
             // LEFT COLUMN
             React.createElement('div', { className: 'col-span-1 space-y-4' },
+
+              // City
               React.createElement('div', { className: 'bg-white rounded-2xl shadow p-4 md:p-5' },
                 React.createElement('label', { className: 'block text-sm font-medium text-slate-700 mb-1' }, 'Select City'),
                 React.createElement('select', { className: 'w-full rounded-xl border p-2', value: city, onChange: (e) => setCity(e.target.value) },
                   Object.keys(CITY_PRESETS).map(c => React.createElement('option', { key: c, value: c }, c))
                 ),
-                React.createElement('p', { className: 'text-xs text-slate-500 mt-2' }, 'Presets are rough starting points — not official cost‑of‑living data.')
+                React.createElement('p', { className: 'text-xs text-slate-500 mt-2' }, 'Presets are rough starting points — not official cost-of-living data.')
               ),
 
+              // Income & SIP & Returns
               React.createElement('div', { className: 'bg-white rounded-2xl shadow p-4 md:p-5 space-y-3' },
                 React.createElement('div', { className: 'flex items-center justify-between' },
-                  React.createElement('label', { className: 'text-sm font-medium text-slate-700' }, 'Monthly Income (take‑home)'),
+                  React.createElement('label', { className: 'text-sm font-medium text-slate-700' }, 'Monthly Income (take-home)'),
                   React.createElement('span', { className: 'text-sm font-semibold' }, INR.format(income || 0))
                 ),
                 React.createElement('input', { type: 'number', min: 0, className: 'w-full rounded-xl border p-2', value: income, onChange: (e) => setIncome(Number(e.target.value)) }),
@@ -306,9 +481,25 @@
                     React.createElement('label', { className: 'text-xs text-slate-600' }, 'Lumpsum Amount (₹)'),
                     React.createElement('input', { type: 'number', min: 0, className: 'w-full rounded-xl border p-2', value: lumpsumAmount, onChange: (e) => setLumpsumAmount(Number(e.target.value)) })
                   )
+                ),
+
+                // Inflation & Step-up
+                React.createElement('div', { className:'grid grid-cols-2 gap-3 pt-3 border-t' },
+                  React.createElement('div', null,
+                    React.createElement('label', { className:'text-xs text-slate-600' }, `Inflation: ${inflPct}% p.a.`),
+                    React.createElement('input', { type:'range', min:0, max:12, step:0.25, value: inflPct, onChange:e=>setInflPct(Number(e.target.value)), className:'w-full' })
+                  ),
+                  React.createElement('div', null,
+                    React.createElement('label', { className:'text-xs text-slate-600' }, `Step-up SIP: ${useStepUp ? stepUpPct + '%/yr' : 'Off'}`),
+                    React.createElement('div', { className:'flex items-center gap-2' },
+                      React.createElement('input', { type:'checkbox', checked:useStepUp, onChange:e=>setUseStepUp(e.target.checked) }),
+                      React.createElement('input', { type:'range', min:0, max:20, step:1, value:stepUpPct, onChange:e=>setStepUpPct(Number(e.target.value)), className:'flex-1' })
+                    )
+                  )
                 )
               ),
 
+              // Expenses editor
               React.createElement('div', { className: 'bg-white rounded-2xl shadow p-4 md:p-5' },
                 React.createElement('div', { className: 'flex items-center justify-between mb-3' },
                   React.createElement('h3', { className: 'font-semibold' }, 'Monthly Expenses'),
@@ -330,7 +521,7 @@
             React.createElement('div', { className: 'col-span-1 lg:col-span-2 space-y-4' },
 
               // KPI CARDS
-              React.createElement('div', { className: 'grid grid-cols-1 md:grid-cols-4 gap-4' },
+              React.createElement('div', { className: 'grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 xl:grid-cols-6 gap-4' },
                 React.createElement('div', { className: 'bg-white rounded-2xl shadow p-4 md:p-5' },
                   React.createElement('div', { className: 'text-xs uppercase text-slate-500 mb-1' }, 'Total Expenses'),
                   React.createElement('div', { className: 'text-2xl font-semibold' }, INR.format(totalExpenses))
@@ -341,13 +532,22 @@
                 ),
                 React.createElement('div', { className: 'bg-white rounded-2xl shadow p-4 md:p-5' },
                   React.createElement('div', { className: 'text-xs uppercase text-slate-500 mb-1' }, 'SIP FV (MF vs LIC)'),
-                  React.createElement('div', { className: 'text-base' }, `${INR.format(sipFvMF)} vs ${INR.format(sipFvLIC)}`),
-                  React.createElement('div', { className: 'text-xs text-slate-500 mt-1' }, `Invested: ${INR.format(investedSip)}`)
+                  React.createElement('div', { className: 'text-base' }, `${INR.format(sipFvMF_stepUp)} vs ${INR.format(sipFvLIC)}`),
+                  React.createElement('div', { className: 'text-xs text-slate-500 mt-1' }, `Invested: ${INR.format(investedSipDisplay)} ${useStepUp?'(step-up)':''}`)
                 ),
                 React.createElement('div', { className: 'bg-white rounded-2xl shadow p-4 md:p-5' },
                   React.createElement('div', { className: 'text-xs uppercase text-slate-500 mb-1' }, 'Lumpsum FV (MF vs LIC)'),
                   React.createElement('div', { className: 'text-base' }, `${INR.format(lumpFvMF)} vs ${INR.format(lumpFvLIC)}`),
                   React.createElement('div', { className: 'text-xs text-slate-500 mt-1' }, `Invested: ${INR.format(lumpsumAmount)}`)
+                ),
+                React.createElement('div', { className:'bg-white rounded-2xl shadow p-4 md:p-5' },
+                  React.createElement('div', { className:'text-xs uppercase text-slate-500 mb-1' }, 'MF SIP FV (Real)'),
+                  React.createElement('div', { className:'text-base' }, INR.format(realSipFvMF)),
+                  React.createElement('div', { className:'text-xs text-slate-500 mt-1' }, `Inflation @ ${inflPct}%`)
+                ),
+                React.createElement('div', { className:'bg-white rounded-2xl shadow p-4 md:p-5' },
+                  React.createElement('div', { className:'text-xs uppercase text-slate-500 mb-1' }, 'Mode'),
+                  React.createElement('div', { className:'text-base' }, mode)
                 )
               ),
 
@@ -374,11 +574,53 @@
                 React.createElement(LineCompareChart, {
                   labels: compLabels,
                   seriesList: [
-                    { label: mode==='SIP' ? 'MF (SIP)' : 'MF (Lumpsum)', values: compMFVals },
+                    { label: mode==='SIP' ? (useStepUp ? 'MF (SIP, step-up)' : 'MF (SIP)') : 'MF (Lumpsum)', values: compMFVals },
                     { label: mode==='SIP' ? 'LIC (SIP)' : 'LIC (Lumpsum)', values: compLICVals }
                   ]
                 }),
-                React.createElement('p', { className: 'text-xs text-slate-500 mt-2' }, 'MF return is a user‑set assumption (market‑linked). LIC IRR is an approximate yield after bonuses; actual policy IRR varies by product & cashflows.')
+                React.createElement('p', { className: 'text-xs text-slate-500 mt-2' }, 'MF return is a user-set assumption (market-linked). LIC IRR is an approximate yield after bonuses; actual policy IRR varies by product & cashflows.')
+              ),
+
+              // Emergency Fund card
+              React.createElement('div', { className:'bg-white rounded-2xl shadow p-4 md:p-5 space-y-2' },
+                React.createElement('h3', { className:'font-semibold' }, 'Emergency Fund'),
+                React.createElement('div', { className:'flex items-center justify-between' },
+                  React.createElement('label', { className:'text-sm text-slate-700' }, `Months of expenses (${efMonths})`),
+                  React.createElement('input', { type:'range', min:1, max:12, step:1, value:efMonths, onChange:e=>setEfMonths(Number(e.target.value)), className:'w-40' })
+                ),
+                React.createElement('div', { className:'text-sm' }, `Target: ${INR.format(efTarget)}`),
+                React.createElement('div', { className:`text-sm ${efMonthsToHit===Infinity?'text-red-600':'text-slate-700'}` },
+                  efMonthsToHit===Infinity ? 'Leftover ≤ 0 — increase income/cut costs to fund EF'
+                  : `At current leftover (${INR.format(leftover)}) → ~${efMonthsToHit} month(s) to build`)
+              ),
+
+              // Goals mini-planner
+              React.createElement('div', { className:'bg-white rounded-2xl shadow p-4 md:p-5 space-y-3' },
+                React.createElement('div', { className:'flex items-center justify-between' },
+                  React.createElement('h3', { className:'font-semibold' }, 'Goal Planner'),
+                  React.createElement('button', { className:'text-sm px-3 py-1.5 rounded-lg bg-slate-900 text-white hover:bg-slate-800',
+                    onClick: () => {
+                      const name = prompt('Goal name (e.g., “House Down-payment”)');
+                      if (!name) return;
+                      const present = Number(prompt('Cost today (₹)')||'0');
+                      const yrs = Number(prompt('Years to goal')||'5');
+                      setGoals([...goals, { id: Date.now(), name, present, years: yrs, priority: 'Med' }]);
+                    }}, '+ Add Goal')
+                ),
+                React.createElement('div', { className:'text-sm text-slate-600' },
+                  `Monthly needed for all goals @ MF return: ${INR.format(totalGoalMonthly)}`
+                ),
+                React.createElement('div', { className:'space-y-2' },
+                  goalRows.map(g => React.createElement('div', { key:g.id, className:'grid grid-cols-12 gap-2 items-center' },
+                    React.createElement('div', { className:'col-span-4' }, g.name),
+                    React.createElement('div', { className:'col-span-3 text-xs text-slate-500' }, `Future: ${INR.format(g.future)}`),
+                    React.createElement('div', { className:'col-span-3 text-xs text-slate-500' }, `Monthly: ${INR.format(g.monthlyNeed)}`),
+                    React.createElement('button', { className:'col-span-2 text-slate-400 hover:text-red-500',
+                      onClick:()=>setGoals(goals.filter(x=>x.id!==g.id)) }, '✕')
+                  ))
+                ),
+                React.createElement('p', { className:'text-xs text-slate-500' },
+                  'Tip: Build the emergency fund first, then allocate SIP between goals.')
               )
             )
           ),
